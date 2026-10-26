@@ -1,0 +1,8 @@
+# Displayname template for iMessage users.
+# {{.Name}} - the contact's name from the Mac's address book, empty if unknown
+# {{.Address}} - the phone number or email address
+displayname_template: "{{or .Name .Address}}"
+# Number of recent chats to create portals for when connecting to BlueBubbles.
+initial_chat_sync_count: 25
+# How often to refresh the contact list from BlueBubbles.
+contact_refresh_interval: 1h

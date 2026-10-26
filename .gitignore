@@ -1,14 +1,11 @@
 .idea
 
 *.yaml
-!.pre-commit-config.yaml
 !example-config.yaml
-!example-registration.yaml
+!.github/workflows/*.yaml
+!.github/workflows/*.yml
 
-*.session
-*.json
 *.db*
 *.log
 
 /mautrix-imessage
-/start

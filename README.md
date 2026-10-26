@@ -1,22 +1,25 @@
 # mautrix-imessage
-A Matrix-iMessage puppeting bridge. The bridge can run on a Mac to bridge
-iMessage or an Android phone to bridge SMS. All features are available when
-using a Mac with SIP disabled, while a normal Mac can be used for basic
-bridging. A [websocket proxy](https://github.com/mautrix/wsproxy)
-is required to receive appservice events from the homeserver.
 
-## Documentation
-All setup and usage instructions are located on
-[docs.mau.fi](https://docs.mau.fi/bridges/go/imessage/index.html):
+A Matrix-iMessage puppeting bridge built on [mautrix-go](https://github.com/mautrix/go)'s
+bridgev2 framework. It talks to a [BlueBubbles](https://bluebubbles.app) server over its
+REST API and websocket, so the bridge itself can run anywhere; only BlueBubbles needs a Mac.
 
-* Bridge setup:
-  [macOS](https://docs.mau.fi/bridges/go/imessage/mac/setup.html),
-  [macOS (without SIP)](https://docs.mau.fi/bridges/go/imessage/mac-nosip/setup.html),
-  [Android SMS](https://docs.mau.fi/bridges/go/imessage/android/setup.html)
+This is a rewrite of the legacy mautrix/imessage bridge that keeps only the BlueBubbles
+connector. The macOS, iOS and Android SMS connectors were dropped.
 
-### Features & Roadmap
-[ROADMAP.md](https://github.com/mautrix/imessage/blob/master/ROADMAP.md)
-contains a general overview of what is supported by the bridge.
+## Features
 
-## Discussion
-Matrix room: [#imessage:maunium.net](https://matrix.to/#/#imessage:maunium.net)
+- Text, attachments, replies, tapbacks, edits, unsends, read receipts and typing
+  notifications in both directions (most of these need the BlueBubbles private API)
+- Group chats with names, icons and membership
+- History backfill
+- End-to-bridge encryption (including MSC4190 for Matrix Authentication Service setups)
+- Double puppeting with an `as_token:` secret
+- Starting new DMs with a phone number or email, and contact list lookups
+
+## Setup
+
+Build with `go build -tags goolm ./cmd/mautrix-imessage` (or without the tag to link libolm),
+then follow the [standard mautrix bridge setup](https://docs.mau.fi/bridges/general/).
+Once the bridge is running, send `login` to the bridge bot and give it the BlueBubbles server
+URL and password. Install `ffmpeg` next to the bridge to send voice messages.

@@ -1,6 +1,9 @@
 package bluebubbles
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Websocket event names, see packages/server/src/server/events.ts in the BlueBubbles server.
 const (
@@ -113,6 +116,20 @@ type Message struct {
 	ThreadOriginatorGUID  string       `json:"threadOriginatorGuid"`
 	ThreadOriginatorPart  string       `json:"threadOriginatorPart"`
 	PartCount             int          `json:"partCount"`
+	// Decoded link preview metadata for URL balloons, shape varies by macOS version.
+	PayloadData json.RawMessage `json:"payloadData"`
+}
+
+const URLBalloonBundleID = "com.apple.messages.URLBalloonProvider"
+
+func (m *Message) IsRichLink() bool {
+	return m.BalloonBundleID == URLBalloonBundleID
+}
+
+// IsHidden reports attachments iMessage never shows, like the serialized
+// link preview metadata that accompanies URL balloons.
+func (a *Attachment) IsHidden() bool {
+	return a.HideAttachment || strings.HasSuffix(a.TransferName, ".pluginPayloadAttachment")
 }
 
 func (m *Message) ChatGUID() string {

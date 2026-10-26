@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,8 +39,15 @@ func (c *IMClient) convertMessage(ctx context.Context, portal *bridgev2.Portal, 
 			PartID:    new(makePartID(targetPart)),
 		}
 	}
-	for i, attachment := range msg.Attachments {
-		part, err := c.convertAttachment(ctx, portal, intent, msg, &attachment)
+	if msg.IsRichLink() {
+		return c.convertRichLink(ctx, portal, intent, msg, cm)
+	}
+	for i := range msg.Attachments {
+		attachment := &msg.Attachments[i]
+		if attachment.IsHidden() {
+			continue
+		}
+		part, err := c.convertAttachment(ctx, portal, intent, msg, attachment)
 		if err != nil {
 			log.Err(err).Str("attachment_guid", attachment.GUID).Msg("Failed to bridge attachment")
 			part = &bridgev2.ConvertedMessagePart{
@@ -123,19 +131,6 @@ func (c *IMClient) convertAttachment(ctx context.Context, portal *bridgev2.Porta
 			Height:   int(attachment.Height),
 		},
 	}
-	switch {
-	case strings.HasPrefix(mimeType, "image/"):
-		content.MsgType = event.MsgImage
-	case strings.HasPrefix(mimeType, "video/"):
-		content.MsgType = event.MsgVideo
-	case strings.HasPrefix(mimeType, "audio/"):
-		content.MsgType = event.MsgAudio
-		if msg.IsAudioMessage {
-			content.MSC3245Voice = &event.MSC3245Voice{}
-		}
-	default:
-		content.MsgType = event.MsgFile
-	}
 	size := resp.ContentLength
 	if size <= 0 {
 		size = attachment.TotalBytes
@@ -165,6 +160,19 @@ func (c *IMClient) convertAttachment(ctx context.Context, portal *bridgev2.Porta
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaReuploadFailed, err)
+	}
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		content.MsgType = event.MsgImage
+	case strings.HasPrefix(mimeType, "video/"):
+		content.MsgType = event.MsgVideo
+	case strings.HasPrefix(mimeType, "audio/"):
+		content.MsgType = event.MsgAudio
+		if msg.IsAudioMessage {
+			content.MSC3245Voice = &event.MSC3245Voice{}
+		}
+	default:
+		content.MsgType = event.MsgFile
 	}
 	part := &bridgev2.ConvertedMessagePart{
 		Type:       event.EventMessage,
@@ -219,4 +227,102 @@ func (c *IMClient) convertEdit(ctx context.Context, msg *bluebubbles.Message, ex
 		return nil, fmt.Errorf("%w: text didn't change", bridgev2.ErrIgnoringRemoteEvent)
 	}
 	return &bridgev2.ConvertedEdit{ModifiedParts: []*bridgev2.ConvertedEditPart{text.ToEditPart(target)}}, nil
+}
+
+// convertRichLink turns a URL balloon (link + preview image + hidden metadata)
+// into a single text message carrying a link preview.
+func (c *IMClient) convertRichLink(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, msg *bluebubbles.Message, cm *bridgev2.ConvertedMessage) (*bridgev2.ConvertedMessage, error) {
+	text := convertText(msg)
+	if text == nil {
+		return nil, fmt.Errorf("%w: link message has no URL", bridgev2.ErrIgnoringRemoteEvent)
+	}
+	text.ID = makePartID(0)
+	preview := &event.BeeperLinkPreview{MatchedURL: text.Content.Body}
+	preview.CanonicalURL = text.Content.Body
+	preview.Title, preview.Description, preview.SiteName = linkMetadata(msg.PayloadData)
+	for i := range msg.Attachments {
+		attachment := &msg.Attachments[i]
+		if attachment.IsHidden() {
+			continue
+		}
+		if err := c.uploadPreviewImage(ctx, portal, intent, attachment, preview); err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Str("attachment_guid", attachment.GUID).Msg("Failed to bridge link preview image")
+		}
+		break
+	}
+	text.Content.BeeperLinkPreviews = []*event.BeeperLinkPreview{preview}
+	cm.Parts = []*bridgev2.ConvertedMessagePart{text}
+	return cm, nil
+}
+
+const maxPreviewImageSize = 10 * 1024 * 1024
+
+func (c *IMClient) uploadPreviewImage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, attachment *bluebubbles.Attachment, preview *event.BeeperLinkPreview) error {
+	resp, err := c.Client.DownloadAttachment(ctx, attachment.GUID)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPreviewImageSize))
+	if err != nil {
+		return err
+	}
+	mimeType := http.DetectContentType(data)
+	if !strings.HasPrefix(mimeType, "image/") {
+		return fmt.Errorf("preview attachment is %s, not an image", mimeType)
+	}
+	fileName := fileNameForMime(attachment.TransferName, mimeType)
+	preview.ImageURL, preview.ImageEncryption, err = intent.UploadMedia(ctx, portal.MXID, data, fileName, mimeType)
+	if err != nil {
+		return err
+	}
+	preview.ImageType = mimeType
+	preview.ImageSize = event.IntOrString(len(data))
+	preview.ImageWidth = event.IntOrString(attachment.Width)
+	preview.ImageHeight = event.IntOrString(attachment.Height)
+	return nil
+}
+
+// linkMetadata digs title, summary and site name out of BlueBubbles' decoded
+// payload data, whose nesting depends on the macOS version.
+func linkMetadata(payload json.RawMessage) (title, description, siteName string) {
+	if len(payload) == 0 {
+		return
+	}
+	var decoded any
+	if json.Unmarshal(payload, &decoded) != nil {
+		return
+	}
+	var walk func(value any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if str, ok := child.(string); ok && str != "" {
+					switch key {
+					case "title":
+						if title == "" {
+							title = str
+						}
+					case "summary":
+						if description == "" {
+							description = str
+						}
+					case "siteName":
+						if siteName == "" {
+							siteName = str
+						}
+					}
+				} else {
+					walk(child)
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(decoded)
+	return
 }
